@@ -298,14 +298,26 @@
     robot.burst(16);
     showBubble(t("landing.robot.celebrate"), 3200);
   }
+  /* 戳动排队：门效（出/入）进行中的点击不丢弃——先计数缓存，门效结束且可见时
+   * 由帧循环依序补放（220ms 步进），庆祝同样等门效后触发。
+   * 解决：重现聚入动画（1.2s）内连点被整段吞掉、毫无反馈的体验缺口。 */
+  let pokeQueue = 0, pokeCelebrate = false, pokeLastAt = 0;
+  function drainPokes(now, immediate) {
+    if (robot.gating || motion?.hidden) return;
+    if (pokeCelebrate) { pokeCelebrate = false; pokeQueue = 0; pokeLastAt = now; celebrate(); return; }
+    if (pokeQueue > 0 && (immediate || now - pokeLastAt >= 220)) {
+      pokeQueue -= 1; pokeLastAt = now;
+      const [kind, opts] = POKES[Math.floor(rng() * POKES.length)];
+      robot.poke(kind, opts || undefined);
+      state.busyUntil = now + 800;
+    }
+  }
   function pokeOnce() {
-    if (robot.gating) return; /* 出入门特效进行中不叠加戳动，避免两套动画打架 */
     state.pokeCount += 1;
     state.idleAt = performance.now();
-    if (state.pokeCount % 5 === 0) return celebrate();
-    const [kind, opts] = POKES[Math.floor(rng() * POKES.length)];
-    robot.poke(kind, opts || undefined);
-    state.busyUntil = performance.now() + 800;
+    if (state.pokeCount % 5 === 0) pokeCelebrate = true;
+    else pokeQueue = Math.min(pokeQueue + 1, 3); /* 上限防连点堆积 */
+    if (!robot.gating) drainPokes(performance.now(), true);
   }
   on(hit, "click", e => {
     if (suppressClick || (state.drag && state.drag.moved)) { suppressClick = false; return; } /* 拖拽结束不触发点击 */
@@ -512,7 +524,7 @@
     }
     const still = now - lastNavAt > 2000 && now >= stayUntil && !formMode && !state.drag && !state.fly && !state.travel
       && !robot.gating && !performing() && state.mode !== "react";
-    if (still) { state.travel = null; robot.setPerforming?.(false); motion?.controller?.hide?.(); }
+    if (still) { state.travel = null; robot.setPerforming?.(false); pokeQueue = 0; pokeCelebrate = false; motion?.controller?.hide?.(); }
   }, 700);
   /* 其他活动同样视作"在场"：指针/键盘/聚焦刷新在场时刻 */
   on(document, "pointermove", () => { lastNavAt = performance.now(); }, { passive: true });
@@ -610,6 +622,7 @@
       layer.style.transform = `translate3d(${(state.x + fd[0] + sdx).toFixed(2)}px, ${(state.y + fd[1] + sdy).toFixed(2)}px, 0)`;
       if (!state.drag && !state.fly) host.style.transform = `scale(${logic.breath(now).toFixed(4)})`;
     }
+    drainPokes(now, false); /* 门效结束后补放排队戳动/庆祝 */
     frameId = requestAnimationFrame(frame);
   }
   const startFrame = () => { if (!frameId && !disposed && visible && !reduced && !document.hidden) frameId = requestAnimationFrame(frame); };
