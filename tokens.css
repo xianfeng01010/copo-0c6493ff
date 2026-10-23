@@ -1,0 +1,57 @@
+/* Copo 共享设计令牌 · 唯一源文件（界面重设计方案 §5.1）
+ *
+ * 语义变量只定义名称与回退值；站点主题赋值由各站点主题文件完成：
+ *   - 管理台：life/web/console.css（绿色工具风，值迁移自 style.css）
+ *   - 官网：life/website/website.css（paper/ink 编辑风）
+ *   - 工作台：life/workbench/web/workbench.css（阶段 6 改引本文件）
+ * 路由暴露：管理台 /assets/tokens.css、官网 /tokens.css（白名单）、工作台复用 /assets/tokens.css。
+ * 旧变量名别名仅为兼容期保留；全部页面切换到新层后删除别名块（打磨计划阶段 6）。 */
+
+:root {
+  /* 形状与层次 */
+  --copo-radius: 10px;
+  --copo-radius-lg: 16px;
+  --copo-shadow: 0 10px 32px rgba(32, 46, 43, 0.026);
+
+  /* 字与间距（4/8/12/16/24/32） */
+  --copo-font:
+    -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI",
+    "Microsoft YaHei", sans-serif;
+  --copo-space-1: 4px;
+  --copo-space-2: 8px;
+  --copo-space-3: 12px;
+  --copo-space-4: 16px;
+  --copo-space-5: 24px;
+  --copo-space-6: 32px;
+
+  /* 语义色（回退值=管理台当前值；站点主题文件显式赋值覆盖） */
+  --copo-bg: #f5f6f2;
+  --copo-surface: #ffffff;
+  --copo-ink: #202e2b;
+  --copo-muted: #77807a;
+  --copo-line: #e1e5dc;
+  --copo-accent: #246b54;
+  --copo-accent-soft: #e7f2e9;
+  --copo-ok: #246b54;
+  --copo-warn: #956b27;
+  --copo-danger: #a34d41;
+
+  /* 断点参考（CSS 变量不可用于媒体查询，仅供文档说明）：
+     主断点 900px；管理台次级 560px、宽屏 1600px；官网保留 900/380。 */
+}
+
+/* 兼容别名：旧变量名 → 语义令牌。
+ * 本文件先于旧样式层加载，旧层内同名声明会按原值生效；别名服务于
+ * 只加载新层的改造页（打磨计划阶段 4 起逐页切换）。 */
+:root {
+  --bg: var(--copo-bg);
+  --paper: var(--copo-surface);
+  --ink: var(--copo-ink);
+  --muted: var(--copo-muted);
+  --line: var(--copo-line);
+  --green: var(--copo-accent);
+  --mint: var(--copo-accent-soft);
+  --amber: var(--copo-warn);
+  --red: var(--copo-danger);
+  --shadow: var(--copo-shadow);
+}

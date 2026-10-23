@@ -1,0 +1,27 @@
+/* Shared Copo motion UI: browser-local controls, independent of page layout. */
+.copo-motion-controls{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));z-index:72;font:500 13px/1.4 var(--copo-font,system-ui,sans-serif);color:var(--copo-ink,#202e2b)}
+.copo-motion-controls button{font:inherit;cursor:pointer;min-height:44px;border:1px solid var(--copo-line,#ccd2c8);color:inherit;background:var(--copo-surface,#faf9f5);border-radius:12px;padding:10px 16px;box-shadow:0 4px 16px #182c2510}
+.copo-motion-controls>button{min-width:72px}
+.copo-motion-controls button:hover{background:var(--copo-bg,#e8eee4)}
+.copo-motion-controls button:focus-visible{outline:2px solid var(--copo-accent,#246b54);outline-offset:3px}
+.copo-motion-controls button:disabled{opacity:.45;cursor:default}
+.copo-motion-menu{position:absolute;right:0;bottom:56px;display:grid;grid-template-columns:1fr 1fr;gap:6px;width:min(264px,calc(100vw - 32px));padding:12px;border:1px solid var(--copo-line,#ccd2c8);border-radius:18px;background:var(--copo-surface,#faf9f5);box-shadow:0 16px 42px #182c2524}
+.copo-motion-menu[hidden]{display:none}
+.copo-motion-menu button{box-shadow:none;padding:10px 8px}
+.copo-motion-menu .copo-motion-feature{background:var(--copo-bg,#e8eee4)}
+.copo-motion-status{grid-column:1/-1;font-size:12px;line-height:1.6;padding:5px 3px 0;color:var(--copo-muted,#617168);overflow-wrap:anywhere}
+.copo-motion-effects{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:59}
+#copo-robot-layer{z-index:60}
+.wf-robot-fab-wrap{bottom:76px}
+@media(max-width:720px){.wf-robot-fab-wrap{bottom:76px}.copo-motion-controls{right:max(12px,env(safe-area-inset-right))}}
+@media(prefers-reduced-motion:reduce){[data-robot-motion]{transition:none!important;animation:none!important}}
+
+/* Hover transforms must not rotate their own translation into an orbit during a performance. */
+.copo-motion-character:hover,.copo-motion-character:active{transform:none;transition:none}
+
+/* Isolated preview obeys the same self-only stylesheet policy as the public website. */
+.copo-motion-preview{margin:0;background:var(--copo-bg,#f3f1eb);color:var(--copo-ink,#202e2b);font:16px/1.8 system-ui}
+.copo-motion-preview header{padding:18px 24px}
+.copo-motion-preview main{padding:16px 24px;pointer-events:none}
+.copo-motion-preview #preview-robot{position:fixed;left:140px;top:360px;z-index:60;width:84px;height:84px}
+.copo-motion-preview #preview-body{width:84px;height:84px}
