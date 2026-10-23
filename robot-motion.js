@@ -458,8 +458,9 @@
       if (!autoReady({ now, lastAuto, lastInput, foreground: !document.hidden, reduced: reduced(), hidden: controller.hidden,
         active: controller.active, menu: !panel.hidden, blocked, idle: !o.idle || o.idle() })) return;
       lastAuto = now;
-      if (innerWidth < 720) robot.poke('nod');
-      else if (o.ambient) o.ambient(); else controller.play(Math.random() < .5 ? 'spin' : 'walk');
+      if (o.ambient) o.ambient(); /* 第4轮：移动端同样获得 ambient 生命感（体验层已将动作约束在卡内） */
+      else if (innerWidth < 720) robot.poke('nod');
+      else controller.play(Math.random() < .5 ? 'spin' : 'walk');
     }, 2500);
     const destroy = () => { if (destroyed) return; destroyed = true; themeObserver.disconnect(); clearInterval(interval); controller.destroy(); events.abort(); bar.remove(); fx.remove(); robot.destroy?.(); o.destroy?.(); };
     addEventListener('pagehide', destroy, { signal });

@@ -427,14 +427,19 @@
    * 开场出现在 logo 旁；滚动停稳 ~380ms 后走/跑到当前模块（速度随滚动快慢）；
    * 页面静止 2s 门式退场，再次滚动在当前模块旁重新出现。 */
   let lastScrollY = scrollY, scrollLastT = 0;
-  let scrollVP = 0, settleTimer = 0, lastNavAt = performance.now();
+  let scrollVP = 0, settleTimer = 0, nearStopTimer = 0, lastNavAt = performance.now();
+  let recallUntil = 0; /* 边缘登场→跳台窗口：期间 followModule 不抢跑（防止照停靠点近走替代跳台） */
   /* 注：滚动计算为同步节流，无 rAF 句柄 */
-  /* 卡片内空位扫描：边列优先、逐行推进，探测机器人中心点（不压正文/交互物） */
+  /* 卡片内空位扫描：边列优先、逐行推进，探测机器人中心点（不压正文/交互物）；
+     宽卡加中列与 30%/70% 分位列（FAQ 等密集卡正文满铺，只有栏间缝隙可站） */
   function stageFreePoints(stage) {
     const out = [];
     const xL = stage.left + 12, xR = stage.right - SIZE() - 12;
     const cols = [xL, xR];
-    if (xR - xL > 340) cols.push(Math.round((xL + xR) / 2)); /* 宽卡加中列 */
+    if (xR - xL > 340) {
+      const w = xR - xL;
+      cols.push(Math.round((xL + xR) / 2), Math.round(xL + w * .3), Math.round(xL + w * .7));
+    }
     const yTop = stage.top + 14, yBot = stage.bottom - SIZE() - 12;
     for (let y = yTop; y <= yBot; y += 104) {
       for (const x of cols) {
@@ -457,10 +462,8 @@
       const same = pts.filter(p => Math.sign(p.x - innerWidth / 2) === side);
       return (same[0] || pts[0]);
     }
-    /* 卡片内全被占：退到卡片外沿"站台"停靠（无瞬移；站台不作为返场强制目标） */
-    return isMobile()
-      ? { x: clampX(stage.right - SIZE() - 10), y: clampY(stage.bottom + 18) }
-      : { x: clampX(state.anchor && state.anchor.x < innerWidth / 2 ? stage.left - SIZE() - 16 : stage.right + 16), y: clampY(stage.top + stage.height * .5) };
+    /* 卡片内全被占：不再停靠卡外"站台"——返回 null，由调用方门式退场等待换卡（第4轮：杜绝舞台外） */
+    return null;
   }
   /* 走/跑过去：travel 状态机由主帧循环推进（匀速段 + 到达减速 + 行进朝向 + 步态起伏 + 速度尾迹）。
    * 跑动起步先蓄力：官方 curious 动作状态 + squash 挤压 240ms 再出发（冲刺前的压身蓄力）。 */
@@ -508,22 +511,14 @@
       if (tr.run) robot.poke("bounce");
     }
   }
-  /* ---- 返场（舞台=卡片）：不在当前卡片内时，走到卡片边缘外的蓄力位，
-   * 用官方 rocket 剪辑（前段蓄力 + 光尾冲刺，终点由宿主指定）冲回卡片内锚点。
-   * 全程位移皆有动画——没有瞬移。 */
+  /* ---- 返场/跳台（舞台=卡片）：原地蓄力（curious+挤压 320ms）后，用官方 rocket
+   * 剪辑（前段蓄力 + 光尾冲刺，终点由宿主指定）跳进卡片内锚点。全程位移皆有动画——
+   * 没有瞬移；第4轮起蓄力位不再设在卡外（机器人不停留、不行进在舞台外）。 */
   function startReentry(anchor) {
-    if (!anchor || reduced || disposed || performing() || state.drag || state.fly || state.travel || pendingTravel || formMode || !visible || motion?.hidden) return false;
-    const dx = anchor.x - state.x, dy = anchor.y - state.y;
-    const horiz = Math.abs(dx) >= Math.abs(dy);
-    const R = 225; /* 官方 rocket 冲程内（≤260px），终点=锚点 */
-    let padPt = horiz
-      ? { x: anchor.x - Math.sign(dx || 1) * R, y: anchor.y }
-      : { x: anchor.x, y: anchor.y - Math.sign(dy || 1) * R };
-    padPt = { x: clampX(padPt.x), y: clampY(padPt.y) };
-    state.reentry = { anchor, pad: padPt, phase: "walk" };
-    const far = Math.hypot(padPt.x - state.x, padPt.y - state.y);
-    if (far > 56) travelTo(padPt);
-    else beginReentryCharge();
+    if (!anchor || reduced || disposed || performing() || robot.gating || state.drag || state.fly || state.travel || pendingTravel || formMode || !visible || motion?.hidden) return false;
+    if (Math.hypot(anchor.x - state.x, anchor.y - state.y) < 60) { travelTo(anchor); return true; } /* 近距：直接走回即可 */
+    state.reentry = { anchor, pad: { x: state.x, y: state.y }, phase: "walk" }; /* pad=原地，仅保留字段兼容相位读取 */
+    beginReentryCharge();
     return true;
   }
   function beginReentryCharge() {
@@ -549,17 +544,28 @@
     if (now - re.settleAt > 140) {                           /* 剪辑结束：落定锚点，开心收尾 */
       state.anchor = { x: state.x, y: state.y };
       state.reentry = null;
+      stayUntil = Math.max(stayUntil, now + 4200);           /* 跳台落地后多陪一会儿再考虑退场 */
       react("happy", 1600); robot.poke("bounce");
     }
   }
   function followModule() {
-    if (reduced || performing() || state.drag || state.fly || state.travel || pendingTravel || state.reentry || formMode || !visible) return;
-    if (motion?.hidden) return;
-    const pt = currentSectionPt(); if (!pt) return;
+    if (reduced || !visible) return;
+    if (motion?.hidden) { /* 退场中收到跟随请求（停稳兜底）：边缘登场并随即跳台 */
+      if (!formMode && !state.reentry) recallFromEdge();
+      return;
+    }
+    if (performance.now() < recallUntil) return; /* 边缘登场→跳台独占窗口：不抢跑 */
+    if (performing() || state.drag || state.fly || state.travel || pendingTravel || state.reentry || formMode) return;
+    const pt = currentSectionPt();
     const stage = liveStage || stageRectOf(currentSection());
+    if (!pt) {
+      /* 卡满且人在卡外：门式退场等待换卡（任何情况都不停靠舞台外） */
+      if (stage && !inRect({ x: state.x, y: state.y }, stage, 30)) gateOut();
+      return;
+    }
     const outside = stage && !inRect({ x: state.x, y: state.y }, stage, 26);
     const dist = Math.hypot(pt.x - state.x, pt.y - state.y);
-    if (outside && inRect(pt, stage, 12) && dist > 120) { startReentry(pt); return; } /* 出舞台：蓄力冲刺回卡片 */
+    if (outside && dist >= 90) { startReentry(pt); return; } /* 换舞台：原地蓄力 → rocket 跳进新卡 */
     if (dist < 90) { robot.look(Math.sign(pt.x - state.x) * .5, 0, 1.5); return; }
     travelTo(pt);
   }
@@ -575,37 +581,160 @@
     if (Math.hypot(pt.x - state.x, pt.y - state.y) > 90) travelTo(pt);
     else robot.look(.6, 0, 1.6);
   }
-  on(globalThis, "scroll", () => {
-    lastNavAt = performance.now();
-    /* 静止退场后再次滚动：从屏幕边缘门式登场（不瞬移到模块旁），落定后走+蓄力冲进当前卡片 */
-    if (motion?.hidden && !formMode && !reduced && !state.reentry) {
-      const anchor = currentSectionPt();
-      if (anchor) {
-        const dock = { x: clampX(anchor.x < innerWidth / 2 ? pad() * .4 : innerWidth - SIZE() - pad() * .4), y: clampY(anchor.y) };
-        place(dock);
-        if (rng() < .6) robot.setBody(pickBody(rng, robot.body), 12); /* 出门换副新样子（沿用原传送的风味） */
-        reappear();
-        later(() => { if (!motion?.hidden) startReentry(currentSectionPt()); }, 1500);
+  /* ---- 门式退场（第4轮）：快滚甩出舞台 / 卡满且人在卡外时离场等待换卡 ---- */
+  function gateOut() {
+    if (pendingTravel) { clearTimeout(pendingTravel); pendingTravel = 0; }
+    state.travel = null; state.reentry = null;
+    robot.setHeading?.(null); robot.stretch(0, 0); robot.setPerforming?.(false);
+    pokeQueue = 0; pokeCelebrate = false;
+    motion?.controller?.hide?.();
+  }
+  /* ---- 屏幕边缘登场 → 蓄力跳进当前卡片（第4轮：登场与跳台连成一个"停止"动作） ---- */
+  function recallFromEdge() {
+    if (reduced || formMode || state.reentry || disposed) return;
+    const anchor = currentSectionPt();
+    if (!anchor) return;
+    recallUntil = performance.now() + 6000; /* 登场+跳台独占窗口：settle/nearStop 不再触发 followModule 抢跑 */
+    /* 停靠点取四条屏幕边缘中离锚点最远者：保证登场后的 rocket 蓄力跳有足够冲程可看 */
+    const cands = [
+      { x: clampX(pad() * .4), y: clampY(anchor.y) },                               /* 左缘 */
+      { x: clampX(innerWidth - SIZE() - pad() * .4), y: clampY(anchor.y) },          /* 右缘 */
+      { x: clampX(anchor.x), y: clampY(84) },                                        /* 顶缘 */
+      { x: clampX(anchor.x), y: clampY(innerHeight - SIZE() - pad() - safeB()) },    /* 底缘 */
+    ];
+    const dock = cands.sort((a, b) => Math.hypot(b.x - anchor.x, b.y - anchor.y) - Math.hypot(a.x - anchor.x, a.y - anchor.y))[0];
+    place(dock);
+    if (rng() < .6) robot.setBody(pickBody(rng, robot.body), 12); /* 出门换副新样子（沿用出门变身风味） */
+    reappear();
+    let tries = 0;
+    /* 跳台终点：离停靠点最远的卡内空位（与停靠点选取互为镜像，保证蓄力跳有冲程）。
+       不能用 currentSectionPt 的"同侧就近"——place(dock) 已把锚点写成停靠点，会选中近点退化成小步走。 */
+    const farPt = () => {
+      const st = stageRectOf(currentSection());
+      const pts = st ? stageFreePoints(st) : [];
+      if (!pts.length) return anchor;
+      return pts.slice().sort((a, b) => Math.hypot(b.x - state.x, b.y - state.y) - Math.hypot(a.x - state.x, a.y - state.y))[0];
+    };
+    const tryJump = () => {
+      if (disposed) { recallUntil = 0; return; }
+      if (motion?.hidden || state.reentry || state.drag || state.fly || formMode) { recallUntil = 0; return; } /* 已在跳/用户接管 */
+      if ((robot.gating || performing() || state.travel || pendingTravel) && ++tries < 20) { later(tryJump, 240); return; } /* 等门式登场/行程收尾 */
+      if (!startReentry(farPt()) && ++tries < 20) { later(tryJump, 240); return; }
+      recallUntil = 0;
+    };
+    later(tryJump, 520);
+  }
+  /* ---- 卡内自由运动（第4轮）：机器人把当前卡片当舞台，在卡内空位间漫游，
+   * 并按卡片"功能"做风味小动作（定价卡旁开心、FAQ 旁好奇、表单旁赞许……）。
+   * 移动端同样参与——此前手机端机器人几乎完全静止。 ---- */
+  const SECTION_ACTS = [
+    { sec: ".hero-rich", els: ".hero-actions .button, .hero-demo-link", state: "happy" },
+    { sec: "#advantages", els: ".value-card", state: "curious" },
+    { sec: ".showcase-section", els: ".service-tag-cloud a", state: "curious" },
+    { sec: "#demo", els: ".animated-demo-screen", state: "listening" },
+    { sec: "#pricing", els: ".project-card, .project-visual .offer-badge", state: "happy" },
+    { sec: "#status", els: ".status-list li", state: "curious" },
+    { sec: "#faq", els: ".faq-list summary", state: "curious" },
+    { sec: "#inquiry", els: ".closing-actions .button, #inquiry-dialog", state: "approving" },
+  ];
+  function stageFlavor(sec) {
+    if (!sec) return null;
+    return SECTION_ACTS.find(a => sec.matches(a.sec)) || null;
+  }
+  /* force: 验收钩子可指定分支（"walk"|"hop"|"act"）；缺省按权重随机 */
+  let roamWhy = ""; /* 最近一次漫游未触发的守卫原因（诊断） */
+  function roamInStage(force) {
+    roamWhy = "";
+    if (reduced || disposed || !visible || motion?.hidden || performing() || robot.gating) { roamWhy = "busy"; return false; }
+    if (state.drag || state.fly || state.travel || state.reentry || pendingTravel || formMode || state.mode === "sleep") { roamWhy = "journey"; return false; }
+    if (document.querySelector("dialog[open], [aria-modal='true']")) { roamWhy = "modal"; return false; } /* 模态框打开时不漫游 */
+    const sec = currentSection(), stage = stageRectOf(sec);
+    if (!stage || !state.anchor || !inRect(state.anchor, stage, 12)) { roamWhy = "anchor-out"; return false; } /* 锚点不在卡内：交给旅程/看护 */
+    const pts = stageFreePoints(stage).filter(p => Math.hypot(p.x - state.anchor.x, p.y - state.anchor.y) >= 120);
+    if (!pts.length) { roamWhy = "no-far-pt"; return false; }
+    /* 风味：优先走向本卡功能元素旁的空位，并看向该元素 */
+    const act = stageFlavor(sec);
+    let lookEl = null, target = null;
+    if (act && act.els) {
+      const vis = [...sec.querySelectorAll(act.els)].filter(el => {
+        const r = el.getBoundingClientRect();
+        return r.width && r.bottom > stage.top && r.top < stage.bottom;
+      });
+      if (vis.length) {
+        lookEl = vis[Math.floor(rng() * vis.length)];
+        const r = lookEl.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        target = pts.slice().sort((a, b) => Math.hypot(a.x - cx, a.y - cy) - Math.hypot(b.x - cx, b.y - cy))[0];
       }
     }
+    if (!target) target = pts[Math.floor(rng() * pts.length)];
+    const roll = force === "walk" ? 0 : force === "hop" ? .8 : force === "act" ? .9 : rng();
+    if (roll < .7) { /* 步行过去，到达后看向功能元素并带上该卡的表情 */
+      launchTravel(target, false);
+      if (lookEl) later(() => {
+        if (disposed || !idleish()) return;
+        lookAtEl(lookEl);
+        react(stageFlavor(currentSection())?.state || "curious", 1800);
+      }, 1800);
+      return true;
+    }
+    if (roll < .85) { /* 卡内小跳（官方 rocket 剪辑，含蓄力与光尾）——移动端同样可用 */
+      const res = motion.controller.play("rocket", { target });
+      if (!res || res.ok === false) launchTravel(target, false);
+      return true;
+    }
+    /* 原地风味动作：看向功能元素 + 表情 + 点头 */
+    if (lookEl) lookAtEl(lookEl);
+    react(act ? act.state : "curious", 2200);
+    robot.poke("nod");
+    return true;
+  }
+  let roamAt = 0; /* 下次卡内漫游时刻（700ms 看护循环调度） */
+  on(globalThis, "scroll", () => {
+    lastNavAt = performance.now();
     /* 计算用同步节流（不包 rAF）：页面 rAF 被节流/遮挡时旅程状态机仍然工作 */
     const now = performance.now(), dt = now - scrollLastT;
     if (dt < 24) return;
     scrollLastT = now;
-    if (reduced || performing() || !visible) return;
     const v = Math.abs(scrollY - lastScrollY) / dt * 1000;
     lastScrollY = scrollY;
     scrollVP = v;
+    /* 静止退场后再次滚动：减速（或离散跳转）时从屏幕边缘门式登场，随即蓄力跳进当前卡片 */
+    if (motion?.hidden && !formMode && !reduced && !state.reentry && (v < 900 || dt > 120)) recallFromEdge();
+    if (reduced || !visible) return;
     state.idleAt = now; /* 滚动是活动，重置闲置计时 */
-    if (state.mode === "drag" || state.mode === "sleep" || state.travel) return;
+    /* 连续快速滚动把机器人甩出舞台：先门式退场，减速时再登场跳回（不再悬浮卡外）。
+       离散跳转（键盘/脚本瞬时滚动，事件间隔大）不适用——交给停稳跳台。 */
+    if (v > 2400 && dt < 120 && !motion?.hidden && !state.reentry && !formMode && !performing()) {
+      const st0 = stageRectOf(currentSection());
+      if (st0 && !inRect({ x: state.x, y: state.y }, st0, 30)) gateOut();
+    }
+    /* 滚动甩掉了进行中的行程：目标已不在当前卡片 → 就地取消，等待跳台 */
+    if (state.travel) {
+      const st1 = stageRectOf(currentSection());
+      if (st1 && !inRect(state.travel.to, st1, 40)) {
+        state.travel = null;
+        robot.setHeading?.(null); robot.stretch(0, 0); robot.setPerforming?.(false);
+        state.anchor = { x: state.x, y: state.y };
+      }
+    }
+    if (state.mode === "drag" || state.mode === "sleep") return;
     if (v > 2600) react("surprised", 700);
     else if (v > 1400) {
       if (!state.squintSince) state.squintSince = now;
       else if (now - state.squintSince > 1200 && idleish()) react("suspicious", 1500);
     } else state.squintSince = 0;
-    /* 滚动停稳后再过去（用户要求：等页面稳定） */
+    /* 停稳兜底 380ms（用户要求：等页面稳定；此前 travel 中会漏排，第4轮修复） */
     clearTimeout(settleTimer);
     settleTimer = later(followModule, 380);
+    /* "即将停止"提前跳台：舞台已换（锚点不在当前卡）且滚动减速 → 140ms 防抖即跳，
+       不必等完全停稳——用户要看到"卡片将停时蓄力跳到新舞台" */
+    if (v > 0 && v < 900 && state.anchor) {
+      const st = liveStage || stageRectOf(currentSection());
+      if (st && !inRect(state.anchor, st, 26)) {
+        clearTimeout(nearStopTimer);
+        nearStopTimer = later(followModule, 140);
+      }
+    }
   }, { passive: true });
   /* 页面静止 2s 门式退场（表单陪伴/拖拽/表演/反应中不退场）；并承担舞台看护与返场收尾 */
   every(() => {
@@ -613,14 +742,25 @@
     const now = performance.now();
     liveStage = stageRectOf(currentSection());
     finishReentryIfIdle(now);
-    /* 舞台看护：拖拽/投掷落点或 resize 后不在当前卡片内 → 1.4s 后返场（走到卡片边蓄力冲刺回来） */
+    /* 舞台看护：拖拽/投掷落点或 resize 后不在当前卡片内 → 1.4s 后原地蓄力跳回；
+       卡满且人在卡外 → 门式退场等待换卡（第4轮：任何情况都不停靠舞台外） */
     if (!state.travel && !state.drag && !state.fly && !state.reentry && !pendingTravel && !formMode && !performing() && !motion?.hidden) {
       const target = currentSectionPt();
-      if (liveStage && target && inRect(target, liveStage, 12) && !inRect({ x: state.x, y: state.y }, liveStage, 30)) {
+      const out = liveStage && !inRect({ x: state.x, y: state.y }, liveStage, 30);
+      if (liveStage && target && inRect(target, liveStage, 12) && out) {
         if (!state.outSince) state.outSince = now;
         else if (now - state.outSince > 1400) { state.outSince = 0; startReentry(target); }
+      } else if (liveStage && !target && out) {
+        if (!state.outSince) state.outSince = now;
+        else if (now - state.outSince > 1400) { state.outSince = 0; gateOut(); }
       } else state.outSince = 0;
     } else state.outSince = 0;
+    /* 卡内漫游：空闲且锚点在卡内 → 每 9–20s 换个空位或做按卡风味动作（移动端同样参与） */
+    if (!roamAt) roamAt = now + 4000 + rng() * 6000;
+    else if (now >= roamAt && !state.drag && !state.fly && !state.travel && !state.reentry && !pendingTravel && !formMode && !motion?.hidden && !performing()) {
+      if (now - lastNavAt < 4000) roamAt = now + 2600; /* 用户正活跃：稍后再说 */
+      else { roamInStage(); roamAt = now + (9 + rng() * 11) * 1000; }
+    }
     if (motion?.hidden) return;
     /* travel 超时兜底：页面 rAF 被节流时旅程不挂死（真实场景 6s 内必然到达） */
     if (state.travel && now - state.travel.born > 6000) {
@@ -679,7 +819,9 @@
 
   /* One position owner: shared motion while performing, gentle idle drift otherwise.
    * 旅程跟随（travel）由本帧循环推进：位移/朝向/步态起伏。 */
-  function scheduleWander() { /* 旧 60s 游走已被旅程跟随（滚动→模块）取代，保留空函数兼容调用 */ }
+  function scheduleWander() { /* 第4轮：拖拽/投掷结束等时机提示看护循环尽早安排一次卡内漫游 */
+    if (!reduced) roamAt = Math.min(roamAt || Infinity, performance.now() + 2600);
+  }
   let frameLast = 0;
   function frame(now) {
     frameId = 0;
@@ -751,11 +893,14 @@
     write: p => { state.x = p.x; state.y = p.y; layer.style.transform = `translate3d(${p.x}px, ${p.y}px, 0)`; },
     before: action => { stopLegacy(); compact = action === 'orbit'; },
     ambient: () => {
-      /* 动作状态回归：闲置时偶发卡片内对角火箭冲刺（官方 rocket 剪辑，含蓄力与光尾） */
-      if (!isMobile() && liveStage && !state.reentry && !state.travel && rng() < .16
-        && inRect({ x: state.x, y: state.y }, liveStage, 14)) {
+      /* 动作状态回归：闲置时偶发卡片内对角火箭冲刺（官方 rocket 剪辑，含蓄力与光尾）；
+         第4轮起移动端同样参与。舞台一律现算（liveStage 可能滞后于滚动），旅程/返场中不做自主位移。 */
+      if (state.travel || state.reentry || pendingTravel || state.drag || state.fly) return;
+      const st = stageRectOf(currentSection());
+      const inSt = !!st && !!state.anchor && inRect(state.anchor, st, 12) && inRect({ x: state.x, y: state.y }, st, 14);
+      if (inSt && rng() < .16) {
         const far = currentSectionPt();
-        if (far && inRect(far, liveStage, 12) && Math.hypot(far.x - state.x, far.y - state.y) > 220) {
+        if (far && inRect(far, st, 12) && Math.hypot(far.x - state.x, far.y - state.y) > 220) {
           motion.controller.play('rocket', { target: far });
           return;
         }
@@ -763,7 +908,18 @@
       switch (logic.pickAmbient(rng)) {
         case 'gaze': robot.look((rng() * 2 - 1) * .9, (rng() * 2 - 1) * .35, 2); break;
         case 'hum': react('humming', 2600); robot.poke('nod'); break;
-        case 'step': motion.controller.play('walk'); break;
+        case 'step': { /* 卡内短步：终点取卡内空位（不用视口边界随机走，防走出当前卡） */
+          let done = null;
+          if (inSt) {
+            const near = stageFreePoints(st).filter(p => {
+              const d = Math.hypot(p.x - state.x, p.y - state.y);
+              return d >= 60 && d <= 200;
+            });
+            if (near.length) done = motion.controller.play('walk', { target: near[Math.floor(rng() * near.length)] });
+          }
+          if (!done || done.ok === false) state.step = { dx: (rng() * 2 - 1) * 22, dy: (rng() * 2 - 1) * 12, t: 0, dur: 520 };
+          break;
+        }
         case 'tilt': robot.poke('nod'); break;
         case 'listen': robot.look(0, -.25, 2.2); react('listening', 2400); break;
         case 'morph': robot.setBody(['sparkle', 'star6', 'heart', 'gem', 'clover'][Math.floor(rng() * 5)], 3.5); robot.poke('spin', { turns: 1 }); break;
@@ -788,8 +944,17 @@
     get traveling() { return !!state.travel; },
     get reentry() { return state.reentry ? state.reentry.phase : null; },
     get hidden() { return !!motion?.hidden; },
+    get stageId() { const s = currentSection(); return s ? (s.id || s.className.split(" ")[0] || "section") : ""; },
+    get inStage() { const st = stageRectOf(currentSection()); return !!st && inRect({ x: state.x, y: state.y }, st, 30); },
+    get roamReady() { /* 诊断：卡内漫游的守卫快照（验收排查用） */
+      const st = stageRectOf(currentSection());
+      return { hidden: !!motion?.hidden, active: !!motion?.active, gating: !!robot.gating, travel: !!state.travel, reentry: !!state.reentry,
+        anchor: state.anchor ? [Math.round(state.anchor.x), Math.round(state.anchor.y)] : null, anchorInStage: !!st && !!state.anchor && inRect(state.anchor, st, 12), freePts: st ? stageFreePoints(st).length : 0, why: roamWhy };
+    },
     target: currentSectionPt,
     follow: followModule,
+    roam: mode => { roamAt = 0; return roamInStage(mode); },
+    jump: pt => startReentry(pt || currentSectionPt()),
   };
 
   /* ---- 用户真实用途联动（机器人对访客在网站里的实际操作做出反应） ---- */
@@ -808,10 +973,14 @@
     if (now - formTeleportAt > 45000 && !state.drag && !state.fly && !state.travel && !pendingTravel && !state.reentry && !performing() && !robot.gating) {
       const dlg = document.getElementById("inquiry-dialog");
       if (dlg) {
-        const r = dlg.getBoundingClientRect();
-        const spot = { x: clampX(Math.min(innerWidth - SIZE() - pad(), r.right + 36)), y: clampY(r.top + 30) };
-        const el = probe(spot.x + SIZE() / 2, spot.y + SIZE() / 2);
-        if (el && !isBlockedEl(el)) { formTeleportAt = now; travelTo(spot); }
+        /* 卡内陪伴：取当前卡内离对话框最近的空位（第4轮：不再站到卡片外对话框右侧） */
+        const st = liveStage || stageRectOf(currentSection());
+        let spot = null;
+        if (st) {
+          const r = dlg.getBoundingClientRect(), fx = r.right + 36, fy = r.top + 30;
+          spot = stageFreePoints(st).slice().sort((a, b) => Math.hypot(a.x - fx, a.y - fy) - Math.hypot(b.x - fx, b.y - fy))[0] || null;
+        }
+        if (spot) { formTeleportAt = now; travelTo(spot); }
       }
     }
     if (robot.state !== "writing") react("listening", 3600);
