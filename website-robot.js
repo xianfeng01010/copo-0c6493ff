@@ -167,11 +167,34 @@
     bubbleUntil: 0, lastBubbleAt: 0,
     sectionSeen: {}, wanderAt: 0, curious: false, squintSince: 0,
     lastPD: 0, lastPAt: 0, dodgeAt: 0,                 /* 指针距离/时刻与躲避节流 */
+    reentry: null, outSince: 0,                        /* 返场状态机 / 出舞台计时 */
   };
   const pad = () => Math.round(SIZE() * .6);
   const safeB = () => parseFloat(cssVar("--copo-robot-safe-b")) || 0;
   const clampX = x => Math.max(pad(), Math.min(innerWidth - SIZE() - pad(), x));
   const clampY = y => Math.max(84, Math.min(innerHeight - SIZE() - pad() - safeB(), y));
+
+  /* ---- 舞台（卡片）：自由活动的边界 ----
+   * 舞台 = 当前区块的内容卡片：container 型 section 即卡片；全宽区块取内层 .container。 */
+  function stageRectOf(sec) {
+    if (!sec) return null;
+    let r = sec.getBoundingClientRect();
+    if (!sec.classList.contains("container")) {
+      const inner = sec.querySelector(".container");
+      const ir = inner && inner.getBoundingClientRect();
+      if (ir && ir.width > 220) r = ir;
+    }
+    return r.width > 0 && r.height > 0 ? r : null;
+  }
+  function currentSection() {
+    for (const s of document.querySelectorAll("main section")) {
+      const r = s.getBoundingClientRect();
+      if (r.top <= innerHeight * .45 && r.bottom >= innerHeight * .45) return s;
+    }
+    return null;
+  }
+  const inRect = (p, r, m = 10) => !!r && p.x >= r.left - m && p.x + SIZE() <= r.right + m && p.y >= r.top - m && p.y + SIZE() <= r.bottom + m;
+  let liveStage = null; /* 主循环节流更新，帧循环免重复测量 */
 
   function probe(x, y) {
     const prev = layer.style.visibility;
@@ -203,12 +226,6 @@
   }
   function place(pt) { state.x = pt.x; state.y = pt.y; state.anchor = pt;
     layer.style.transform = `translate3d(${Math.round(pt.x)}px, ${Math.round(pt.y)}px, 0)`; /* rAF 停摆时也立即就位 */ }
-  function teleport(pt, opts = {}) {
-    place(pt); layer.style.transform = `translate3d(${pt.x}px, ${pt.y}px, 0)`;
-    /* 每次出门换副新样子（基础形体池避开当前）；表单陪伴传送保持当前形体不打断陪伴氛围 */
-    if (!opts.keepBody) robot.setBody(pickBody(rng, robot.body), 12);
-    if (!motion?.hidden) reappear();
-  }
   function spawn() {
     /* 开场：叠放在顶部 logo 上出现（门式粒子=从 logo 冒出），入场后走到旁边站定；
        无法定位 logo 时退回常规锚点。 */
@@ -333,6 +350,7 @@
   on(hit, "pointerdown", e => {
     if (e.button !== 0 || motion?.hidden) return;
     const current = { x: state.x, y: state.y };
+    state.reentry = null; /* 抓起即中止返场（含蓄力计时，随 timers 清理） */
     motion?.controller.cancel(); place(current);
     layer.style.transform = `translate3d(${current.x}px, ${current.y}px, 0)`;
     suppressClick = false;
@@ -411,36 +429,58 @@
   let lastScrollY = scrollY, scrollLastT = 0;
   let scrollVP = 0, settleTimer = 0, lastNavAt = performance.now();
   /* 注：滚动计算为同步节流，无 rAF 句柄 */
-  function currentSectionPt() {
-    if (isMobile()) { /* 移动端：当前 section 下缘的底部两角取近者 */
-      const secs = [...document.querySelectorAll("main section")];
-      let best = null;
-      for (const s of secs) { const r = s.getBoundingClientRect(); if (r.top <= innerHeight * .45 && r.bottom >= innerHeight * .45) { best = s; break; } }
-      const y = clampY((best ? best.getBoundingClientRect().bottom : innerHeight) - SIZE() - 24);
-      const cands = [{ x: clampX(innerWidth - SIZE() - 18), y }, { x: clampX(18), y }];
-      const ok = filterAnchors(cands, probe);
-      return ok[0] || cands[0];
+  /* 卡片内空位扫描：边列优先、逐行推进，探测机器人中心点（不压正文/交互物） */
+  function stageFreePoints(stage) {
+    const out = [];
+    const xL = stage.left + 12, xR = stage.right - SIZE() - 12;
+    const cols = [xL, xR];
+    if (xR - xL > 340) cols.push(Math.round((xL + xR) / 2)); /* 宽卡加中列 */
+    const yTop = stage.top + 14, yBot = stage.bottom - SIZE() - 12;
+    for (let y = yTop; y <= yBot; y += 104) {
+      for (const x of cols) {
+        const p = { x: clampX(x), y: clampY(y) };
+        const el = probe(p.x + SIZE() / 2, p.y + SIZE() / 2);
+        if (el && !isBlockedEl(el)) out.push(p);
+      }
+      if (out.length >= 3 && y > yTop + 100) break; /* 够用即止，控制探测成本 */
     }
-    const secs = [...document.querySelectorAll("main section")];
-    let best = null;
-    for (const s of secs) { const r = s.getBoundingClientRect(); if (r.top <= innerHeight * .45 && r.bottom >= innerHeight * .45) { best = s; break; } }
-    if (!best) return null;
-    const r = best.getBoundingClientRect();
-    const side = state.anchor && state.anchor.x < innerWidth / 2 ? 1 : -1; /* 左右轮换槽 */
-    const pts = [
-      { x: side > 0 ? innerWidth - SIZE() - pad() - 8 : pad() + 6, y: clampY(r.top + r.height * .35) },
-      { x: side > 0 ? innerWidth - SIZE() - pad() - 8 : pad() + 6, y: clampY(r.top + r.height * .7) },
-    ].map(p => ({ x: clampX(p.x), y: p.y }));
-    const ok = filterAnchors(pts, probe);
-    return ok[0] || null;
+    return out;
   }
-  /* 走/跑过去：travel 状态机由主帧循环推进（匀速段 + 到达减速 + 行进朝向 + 步态起伏 + 速度尾迹） */
-  function travelTo(pt) {
+  function currentSectionPt() {
+    const stage = stageRectOf(currentSection());
+    if (!stage) return null;
+    const pts = stageFreePoints(stage);
+    if (pts.length) {
+      if (isMobile()) return pts[pts.length - 1]; /* 移动端偏好靠下空位 */
+      /* 桌面：就近侧（左右轮换偏好保留：优先离当前锚点同侧的空位） */
+      const side = state.anchor ? Math.sign(state.anchor.x - innerWidth / 2) || 1 : 1;
+      const same = pts.filter(p => Math.sign(p.x - innerWidth / 2) === side);
+      return (same[0] || pts[0]);
+    }
+    /* 卡片内全被占：退到卡片外沿"站台"停靠（无瞬移；站台不作为返场强制目标） */
+    return isMobile()
+      ? { x: clampX(stage.right - SIZE() - 10), y: clampY(stage.bottom + 18) }
+      : { x: clampX(state.anchor && state.anchor.x < innerWidth / 2 ? stage.left - SIZE() - 16 : stage.right + 16), y: clampY(stage.top + stage.height * .5) };
+  }
+  /* 走/跑过去：travel 状态机由主帧循环推进（匀速段 + 到达减速 + 行进朝向 + 步态起伏 + 速度尾迹）。
+   * 跑动起步先蓄力：官方 curious 动作状态 + squash 挤压 240ms 再出发（冲刺前的压身蓄力）。 */
+  let pendingTravel = 0;
+  function launchTravel(pt, run) {
     const dist = Math.hypot(pt.x - state.x, pt.y - state.y);
-    const run = scrollVP > 1600 || dist > 640;
     state.travel = { to: pt, v: run ? 920 : 380, run, t: 0, dist, born: performance.now() };
     state.mode = "free";
     robot.setPerforming?.(true);   /* 行进中弱化剪辑摇摆（引擎 displayFrame） */
+  }
+  function travelTo(pt) {
+    const dist = Math.hypot(pt.x - state.x, pt.y - state.y);
+    const run = scrollVP > 1600 || dist > 640;
+    if (run && !state.reentry) {
+      if (pendingTravel) return;
+      react("curious", 900); robot.poke("squash");
+      pendingTravel = later(() => { pendingTravel = 0; if (!disposed && !state.drag && !state.fly && !performing()) launchTravel(pt, run); }, 240);
+      return;
+    }
+    launchTravel(pt, run);
   }
   function stepTravel(dt, now) {
     const tr = state.travel; if (!tr) return;
@@ -462,15 +502,64 @@
       robot.stretch(0, 0);
       robot.setPerforming?.(false);
       state.anchor = { ...tr.to };
+      const re = state.reentry;
+      if (re && re.phase === "walk" && Math.hypot(tr.to.x - re.pad.x, tr.to.y - re.pad.y) < 6) { beginReentryCharge(); return; }
       react(tr.run ? "happy" : "idle", tr.run ? 1400 : 0);    /* 跑到了：开心 */
       if (tr.run) robot.poke("bounce");
     }
   }
+  /* ---- 返场（舞台=卡片）：不在当前卡片内时，走到卡片边缘外的蓄力位，
+   * 用官方 rocket 剪辑（前段蓄力 + 光尾冲刺，终点由宿主指定）冲回卡片内锚点。
+   * 全程位移皆有动画——没有瞬移。 */
+  function startReentry(anchor) {
+    if (!anchor || reduced || disposed || performing() || state.drag || state.fly || state.travel || pendingTravel || formMode || !visible || motion?.hidden) return false;
+    const dx = anchor.x - state.x, dy = anchor.y - state.y;
+    const horiz = Math.abs(dx) >= Math.abs(dy);
+    const R = 225; /* 官方 rocket 冲程内（≤260px），终点=锚点 */
+    let padPt = horiz
+      ? { x: anchor.x - Math.sign(dx || 1) * R, y: anchor.y }
+      : { x: anchor.x, y: anchor.y - Math.sign(dy || 1) * R };
+    padPt = { x: clampX(padPt.x), y: clampY(padPt.y) };
+    state.reentry = { anchor, pad: padPt, phase: "walk" };
+    const far = Math.hypot(padPt.x - state.x, padPt.y - state.y);
+    if (far > 56) travelTo(padPt);
+    else beginReentryCharge();
+    return true;
+  }
+  function beginReentryCharge() {
+    const re = state.reentry; if (!re || re.phase !== "walk") return;
+    re.phase = "charge";
+    react("curious", 1200); robot.poke("squash");            /* 蓄力动作状态（官方 curious + 挤压） */
+    re.chargeTimer = later(() => {
+      const cur = state.reentry; if (cur !== re) return;
+      cur.phase = "rocket";
+      const res = motion?.controller.play("rocket", { target: re.anchor });
+      if (!res || res.ok === false) {                        /* 无冲刺空间：已蓄力，直接快跑进卡片 */
+        state.reentry = null;
+        launchTravel(re.anchor, true);
+        return;
+      }
+      cur.settleAt = performance.now();
+    }, 320);
+  }
+  function finishReentryIfIdle(now) {
+    const re = state.reentry;
+    if (!re || re.phase !== "rocket") return;
+    if (performing()) { re.settleAt = now; return; }         /* rocket 剪辑进行中 */
+    if (now - re.settleAt > 140) {                           /* 剪辑结束：落定锚点，开心收尾 */
+      state.anchor = { x: state.x, y: state.y };
+      state.reentry = null;
+      react("happy", 1600); robot.poke("bounce");
+    }
+  }
   function followModule() {
-    if (reduced || performing() || state.drag || state.fly || state.travel || formMode || !visible) return;
+    if (reduced || performing() || state.drag || state.fly || state.travel || pendingTravel || state.reentry || formMode || !visible) return;
     if (motion?.hidden) return;
     const pt = currentSectionPt(); if (!pt) return;
+    const stage = liveStage || stageRectOf(currentSection());
+    const outside = stage && !inRect({ x: state.x, y: state.y }, stage, 26);
     const dist = Math.hypot(pt.x - state.x, pt.y - state.y);
+    if (outside && inRect(pt, stage, 12) && dist > 120) { startReentry(pt); return; } /* 出舞台：蓄力冲刺回卡片 */
     if (dist < 90) { robot.look(Math.sign(pt.x - state.x) * .5, 0, 1.5); return; }
     travelTo(pt);
   }
@@ -488,11 +577,16 @@
   }
   on(globalThis, "scroll", () => {
     lastNavAt = performance.now();
-    /* 静止退场后再次滚动：在当前模块旁重新出现 */
-    if (motion?.hidden && !formMode && !reduced) {
-      const pt = currentSectionPt();
-      if (pt) place(pt);
-      reappear();
+    /* 静止退场后再次滚动：从屏幕边缘门式登场（不瞬移到模块旁），落定后走+蓄力冲进当前卡片 */
+    if (motion?.hidden && !formMode && !reduced && !state.reentry) {
+      const anchor = currentSectionPt();
+      if (anchor) {
+        const dock = { x: clampX(anchor.x < innerWidth / 2 ? pad() * .4 : innerWidth - SIZE() - pad() * .4), y: clampY(anchor.y) };
+        place(dock);
+        if (rng() < .6) robot.setBody(pickBody(rng, robot.body), 12); /* 出门换副新样子（沿用原传送的风味） */
+        reappear();
+        later(() => { if (!motion?.hidden) startReentry(currentSectionPt()); }, 1500);
+      }
     }
     /* 计算用同步节流（不包 rAF）：页面 rAF 被节流/遮挡时旅程状态机仍然工作 */
     const now = performance.now(), dt = now - scrollLastT;
@@ -513,18 +607,29 @@
     clearTimeout(settleTimer);
     settleTimer = later(followModule, 380);
   }, { passive: true });
-  /* 页面静止 2s 门式退场（表单陪伴/拖拽/表演/反应中不退场） */
+  /* 页面静止 2s 门式退场（表单陪伴/拖拽/表演/反应中不退场）；并承担舞台看护与返场收尾 */
   every(() => {
-    if (reduced || disposed || !visible || motion?.hidden) return;
+    if (reduced || disposed || !visible) return;
     const now = performance.now();
+    liveStage = stageRectOf(currentSection());
+    finishReentryIfIdle(now);
+    /* 舞台看护：拖拽/投掷落点或 resize 后不在当前卡片内 → 1.4s 后返场（走到卡片边蓄力冲刺回来） */
+    if (!state.travel && !state.drag && !state.fly && !state.reentry && !pendingTravel && !formMode && !performing() && !motion?.hidden) {
+      const target = currentSectionPt();
+      if (liveStage && target && inRect(target, liveStage, 12) && !inRect({ x: state.x, y: state.y }, liveStage, 30)) {
+        if (!state.outSince) state.outSince = now;
+        else if (now - state.outSince > 1400) { state.outSince = 0; startReentry(target); }
+      } else state.outSince = 0;
+    } else state.outSince = 0;
+    if (motion?.hidden) return;
     /* travel 超时兜底：页面 rAF 被节流时旅程不挂死（真实场景 6s 内必然到达） */
     if (state.travel && now - state.travel.born > 6000) {
       place(state.travel.to); state.travel = null;
       robot.setHeading?.(null); robot.stretch(0, 0); robot.setPerforming?.(false);
     }
-    const still = now - lastNavAt > 2000 && now >= stayUntil && !formMode && !state.drag && !state.fly && !state.travel
+    const still = now - lastNavAt > 2000 && now >= stayUntil && !formMode && !state.drag && !state.fly && !state.travel && !state.reentry
       && !robot.gating && !performing() && state.mode !== "react";
-    if (still) { state.travel = null; robot.setPerforming?.(false); pokeQueue = 0; pokeCelebrate = false; motion?.controller?.hide?.(); }
+    if (still) { state.travel = null; state.reentry = null; robot.setPerforming?.(false); pokeQueue = 0; pokeCelebrate = false; motion?.controller?.hide?.(); }
   }, 700);
   /* 其他活动同样视作"在场"：指针/键盘/聚焦刷新在场时刻 */
   on(document, "pointermove", () => { lastNavAt = performance.now(); }, { passive: true });
@@ -619,7 +724,13 @@
       }
       const driftWeight = Math.min(1, (now - state.idleAt) / 450);
       const fd = logic.floatDrift(now, (state.mode === "sleep" ? .45 : 1) * (state.drag || state.fly ? .3 : 1) * driftWeight);
-      layer.style.transform = `translate3d(${(state.x + fd[0] + sdx).toFixed(2)}px, ${(state.y + fd[1] + sdy).toFixed(2)}px, 0)`;
+      let px = state.x + fd[0] + sdx, py = state.y + fd[1] + sdy;
+      /* 自由漂浮钳在舞台（卡片）内：锚点在卡片内时，微徘徊/漂浮不越出卡片 */
+      if (!state.reentry && liveStage && state.anchor && inRect(state.anchor, liveStage, 12)) {
+        px = Math.max(liveStage.left + 4, Math.min(liveStage.right - SIZE() - 4, px));
+        py = Math.max(liveStage.top + 4, Math.min(liveStage.bottom - SIZE() - 4, py));
+      }
+      layer.style.transform = `translate3d(${px.toFixed(2)}px, ${py.toFixed(2)}px, 0)`;
       if (!state.drag && !state.fly) host.style.transform = `scale(${logic.breath(now).toFixed(4)})`;
     }
     drainPokes(now, false); /* 门效结束后补放排队戳动/庆祝 */
@@ -628,7 +739,7 @@
   const startFrame = () => { if (!frameId && !disposed && visible && !reduced && !document.hidden) frameId = requestAnimationFrame(frame); };
   function stopLegacy() {
     for (const id of timers) clearTimeout(id); timers.clear();
-    state.drag = null; state.fly = null; state.step = null;
+    state.drag = null; state.fly = null; state.step = null; if (pendingTravel) pendingTravel = 0;
     robot.stretch(0, 0);
     layer.classList.remove("copo-robot-bubbling", "copo-robot-sleeping");
     state.mode = "free"; state.busyUntil = performance.now() + 1000;
@@ -640,6 +751,15 @@
     write: p => { state.x = p.x; state.y = p.y; layer.style.transform = `translate3d(${p.x}px, ${p.y}px, 0)`; },
     before: action => { stopLegacy(); compact = action === 'orbit'; },
     ambient: () => {
+      /* 动作状态回归：闲置时偶发卡片内对角火箭冲刺（官方 rocket 剪辑，含蓄力与光尾） */
+      if (!isMobile() && liveStage && !state.reentry && !state.travel && rng() < .16
+        && inRect({ x: state.x, y: state.y }, liveStage, 14)) {
+        const far = currentSectionPt();
+        if (far && inRect(far, liveStage, 12) && Math.hypot(far.x - state.x, far.y - state.y) > 220) {
+          motion.controller.play('rocket', { target: far });
+          return;
+        }
+      }
       switch (logic.pickAmbient(rng)) {
         case 'gaze': robot.look((rng() * 2 - 1) * .9, (rng() * 2 - 1) * .35, 2); break;
         case 'hum': react('humming', 2600); robot.poke('nod'); break;
@@ -666,6 +786,7 @@
   /* 旅程跟随调试/验收钩子（只读 + 手动触发，供浏览器验收与测试） */
   globalThis.CopoWebsiteRobotJourney = {
     get traveling() { return !!state.travel; },
+    get reentry() { return state.reentry ? state.reentry.phase : null; },
     get hidden() { return !!motion?.hidden; },
     target: currentSectionPt,
     follow: followModule,
@@ -677,20 +798,20 @@
     const [gx, gy] = logic.gazeFrom(hr, r.left + r.width / 2, r.top + r.height / 2);
     robot.look(gx, gy, 2.4);
   }
-  /* 1) 需求表单陪伴：聚焦 → 传送到对话框旁 listening（等你说话）；打字 → writing（帮你记录）；
-        停顿 1.8s 回 listening；整体失焦 → 退出陪伴回常规。 */
+  /* 1) 需求表单陪伴：聚焦 → 走到对话框旁 listening（等你说话）；打字 → writing（帮你记录）；
+        停顿 1.8s 回 listening；整体失焦 → 退出陪伴回常规。（步行过去，不瞬移） */
   const inForm = el => !!(el && el.closest && el.closest("#inquiry-form, #inquiry-dialog"));
   on(document, "focusin", e => {
     if (!inForm(e.target) || reduced) return;
     formMode = true; state.idleAt = performance.now();
     const now = performance.now();
-    if (now - formTeleportAt > 45000 && !state.drag && !state.fly && !performing() && !robot.gating) {
+    if (now - formTeleportAt > 45000 && !state.drag && !state.fly && !state.travel && !pendingTravel && !state.reentry && !performing() && !robot.gating) {
       const dlg = document.getElementById("inquiry-dialog");
       if (dlg) {
         const r = dlg.getBoundingClientRect();
         const spot = { x: clampX(Math.min(innerWidth - SIZE() - pad(), r.right + 36)), y: clampY(r.top + 30) };
         const el = probe(spot.x + SIZE() / 2, spot.y + SIZE() / 2);
-        if (el && !isBlockedEl(el)) { formTeleportAt = now; teleport(spot, { keepBody: true }); }
+        if (el && !isBlockedEl(el)) { formTeleportAt = now; travelTo(spot); }
       }
     }
     if (robot.state !== "writing") react("listening", 3600);

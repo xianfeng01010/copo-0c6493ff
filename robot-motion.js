@@ -178,13 +178,18 @@
     }
     const api = {
       get active() { return active; }, get hidden() { return hidden; },
-      play(action) {
+      play(action, opts = {}) {
         if (destroyed || hidden || !['walk', 'run', 'rocket', 'orbit', 'spin', 'bounce', 'pogo', 'tumble'].includes(action)) return { ok: false, reason: 'unavailable' };
         clear(); a.before?.(action);
         if (a.reduced()) { a.restore(); return notify({ ok: false, reason: 'reduced' }); }
         const home = a.read();
         const stationary = ['spin', 'bounce', 'pogo', 'tumble'].includes(action);
-        const points = stationary ? null : route(action, home, a.bounds(), a.safe);
+        let points = stationary ? null : route(action, home, a.bounds(), a.safe);
+        /* 宿主指定终点（旅程模型返场冲刺）：路径安全则用官方剪辑冲刺到该点，否则回退默认路径 */
+        if (!stationary && opts && typeof opts.target === 'object' && opts.target) {
+          const b = a.bounds(), tg = { x: clamp(opts.target.x, b.left, b.right), y: clamp(opts.target.y, b.top, b.bottom) };
+          if (distance(home, tg) >= 36 && safePath([home, tg], a.safe)) points = [home, tg];
+        }
         if (!stationary && !points) { a.restore(); return notify({ ok: false, reason: 'space' }); }
         const total = points ? points.slice(1).reduce((s, p, i) => s + distance(points[i], p), 0) : 0;
         return begin(action, action === 'orbit' ? clamp(total / .46, 6000, 14000) : action === 'spin' ? 1250 : action === 'rocket' ? 1050 : action === 'walk' ? 2800 : action === 'run' ? 1400 : action === 'pogo' ? 2500 : action === 'tumble' ? 1900 : 1800, points);
