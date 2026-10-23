@@ -195,15 +195,15 @@
         return begin(action, action === 'orbit' ? clamp(total / .46, 6000, 14000) : action === 'spin' ? 1250 : action === 'rocket' ? 1050 : action === 'walk' ? 2800 : action === 'run' ? 1400 : action === 'pogo' ? 2500 : action === 'tumble' ? 1900 : 1800, points);
       },
       cancel() { if (destroyed) return; clear(); notify({ ok: true, stopped: true }); },
-      hide() {
+      hide(opts = {}) {
         if (destroyed) return; clear(); a.before?.('hide'); hidden = true; a.persist?.(true);
         if (a.reduced()) { a.visibility(false); notify({ ok: true }); return; }
-        return begin('hide', 1200);
+        return begin('hide', clamp(Number(opts?.duration) || 1200, 180, 1200));
       },
-      show() {
+      show(opts = {}) {
         if (destroyed) return; clear(); a.before?.('show'); hidden = false; a.persist?.(false);
         if (a.reduced()) { a.visibility(true); notify({ ok: true }); return; }
-        return begin('show', 1200);
+        return begin('show', clamp(Number(opts?.duration) || 1200, 180, 1200));
       },
       destroy() { if (destroyed) return; clear(false); destroyed = true; a.visibility(false); }
     };
@@ -397,7 +397,7 @@
     if (o.anchorOnly) { const b = bounds(), d0 = read(); setPoint({ x: clamp(d0.x, b.left, Math.max(b.left, b.right)), y: clamp(d0.y, b.top, Math.max(b.top, b.bottom)) }); }
     else setPoint(safeDock(read()));
     const controller = create({ read, write: setPoint, size, bounds, safe, reduced,
-      hidden: saved, persist: v => { try { localStorage.setItem('copo.robot.hidden', String(v)); } catch (_) {} },
+      hidden: saved && o.persistVisibility !== false, persist: v => { if(o.persistVisibility === false)return; try { localStorage.setItem('copo.robot.hidden', String(v)); } catch (_) {} },
       before: action => { o.before?.(action); orbitSize = action === 'orbit' && innerWidth < 720 ? 36 : null; obstacles = obstacleRects(blocked); robot.setPerforming?.(true); },
       restore: () => {
         obstacles = null; orbitSize = null; robot.setPerforming?.(false); o.restore?.();
